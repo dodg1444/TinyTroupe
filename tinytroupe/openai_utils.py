@@ -8,6 +8,8 @@ import logging
 import configparser
 import tiktoken
 from tinytroupe import utils
+from transformers import AutoTokenizer, AutoModelForCausalLM, pipeline
+from gpt4all import GPT4All
 
 logger = logging.getLogger("tinytroupe")
 
@@ -483,6 +485,76 @@ def force_default_value(key, value):
 # default client
 register_client("openai", OpenAIClient())
 register_client("azure", AzureClient())
+
+
+class LocalLLMClient(OpenAIClient):
+    """Client for using local LLM models via GPT4All."""
+
+    def __init__(self, model_path="Meta-Llama-3-8B-Instruct.Q4_0.gguf", 
+                 cache_api_calls=default["cache_api_calls"], 
+                 cache_file_name=default["cache_file_name"]) -> None:
+        super().__init__(cache_api_calls, cache_file_name)
+        self.model_path = model_path
+        self._setup_model()
+
+    def _setup_model(self):
+        """Sets up the GPT4All model."""
+        logger.info(f"Initializing GPT4All model: {self.model_path}...")
+        start_time = time.time()
+        self.model = GPT4All(self.model_path, n_ctx=4096)
+        end_time = time.time()
+        logger.info(f"Model initialized in {end_time - start_time:.2f} seconds")
+
+    def _raw_model_call(self, model, chat_api_params):
+        """Calls the GPT4All model with the given parameters."""
+        messages = chat_api_params["messages"]
+        
+        # Format messages into prompt
+        prompt = ""
+        for msg in messages:
+            if msg["role"] == "system":
+                prompt += f"System: {msg['content']}\n"
+            elif msg["role"] == "user": 
+                prompt += f"Human: {msg['content']}\n"
+            elif msg["role"] == "assistant":
+                prompt += f"Assistant: {msg['content']}\n"
+        prompt += "Assistant: "
+
+        # Generate response using GPT4All
+        response = self.model.generate(
+            prompt,
+            max_tokens=chat_api_params.get("max_tokens", default["max_tokens"]),
+            temp=chat_api_params.get("temperature", default["temperature"]),
+            top_p=chat_api_params.get("top_p", default["top_p"]),
+            repeat_penalty=1.2,
+        )
+        
+        # Format response like OpenAI API
+        return {
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": response.strip()
+                }
+            }]
+        }
+
+    def _raw_model_response_extractor(self, response):
+        """Extracts response from local model output format."""
+        return response["choices"][0]["message"]
+
+    def _raw_embedding_model_call(self, text, model):
+        """
+        Gets embeddings using a basic implementation.
+        Note: GPT4All doesn't provide embeddings directly, so this is a placeholder.
+        Consider using sentence-transformers or another embedding solution if needed.
+        """
+        raise NotImplementedError("Embeddings are not supported with GPT4All backend")
+
     
+    def _setup_from_config(self):
+        pass
+
+register_client("local", LocalLLMClient())
 
 
